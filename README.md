@@ -16,12 +16,13 @@ The datasets can be found in the links below:
 
 You can find the code in my [GitHub repository](https://github.com/cqhung1412/lstm_cnn_sentiment).
 
-## Development
+## Implementation
 
 ### Import dataset
 
 
 ```python
+import os
 import spacy
 import pandas as pd
 import numpy as np
@@ -29,6 +30,7 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 from tensorflow.keras.preprocessing.text import Tokenizer
 from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from keras.models import Model
 from keras.layers import Input, Embedding, LSTM, Conv1D, GlobalMaxPooling1D, concatenate, Dense, Dropout, BatchNormalization
 from keras.utils import to_categorical
@@ -36,28 +38,20 @@ from sklearn.model_selection import train_test_split
 from concurrent.futures import ProcessPoolExecutor
 ```
 
-    2024-06-24 07:13:05.480395: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
-    To enable the following instructions: AVX2 FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
-    2024-06-24 07:13:06.222753: W tensorflow/compiler/tf2tensorrt/utils/py_utils.cc:38] TF-TRT Warning: Could not find TensorRT
-
-
 
 ```python
 # Check if TensorFlow is using GPU
 print("Num GPUs Available: ", len(tf.config.list_physical_devices('GPU')))
 ```
 
-    Num GPUs Available:  1
+Num GPUs Available:  1
 
+```python
+cpu_count = os.cpu_count()
+print("Num CPUs Available: ", cpu_count)
+```
 
-    2024-06-24 07:13:07.633008: I external/local_xla/xla/stream_executor/cuda/cuda_executor.cc:984] could not open file to read NUMA node: /sys/bus/pci/devices/0000:01:00.0/numa_node
-    Your kernel may have been built without NUMA support.
-    2024-06-24 07:13:07.684582: I external/local_xla/xla/stream_executor/cuda/cuda_executor.cc:984] could not open file to read NUMA node: /sys/bus/pci/devices/0000:01:00.0/numa_node
-    Your kernel may have been built without NUMA support.
-    2024-06-24 07:13:07.684642: I external/local_xla/xla/stream_executor/cuda/cuda_executor.cc:984] could not open file to read NUMA node: /sys/bus/pci/devices/0000:01:00.0/numa_node
-    Your kernel may have been built without NUMA support.
-
-
+Num CPUs Available:  12
 
 ```python
 # Load spaCy model
@@ -73,7 +67,6 @@ def filter_text_by_pos(text):
 def process_texts(texts):
     return [filter_text_by_pos(text) for text in texts]
 ```
-
 
 ```python
 # Load pre-trained GloVe embeddings
@@ -95,29 +88,12 @@ def load_glove_embeddings(glove_path, tokenizer, embedding_dim):
     return embedding_matrix
 ```
 
-
 ```python
 data = pd.read_csv("./rotten_tomatoes_movie_reviews.csv")
 data.head()
 ```
 
-
-
-
 <div>
-<style scoped>
-    .dataframe tbody tr th:only-of-type {
-        vertical-align: middle;
-    }
-
-    .dataframe tbody tr th {
-        vertical-align: top;
-    }
-
-    .dataframe thead th {
-        text-align: right;
-    }
-</style>
 <table border="1" class="dataframe">
   <thead>
     <tr style="text-align: right;">
@@ -210,10 +186,7 @@ data.head()
 </table>
 </div>
 
-
-
 ### Data cleaning
-
 
 ```python
 # Drop missing reviewText rows
@@ -228,23 +201,7 @@ data['sentiment'] = data['reviewState'].apply(lambda x: 1 if x == 'fresh' else 0
 data.head()
 ```
 
-
-
-
 <div>
-<style scoped>
-    .dataframe tbody tr th:only-of-type {
-        vertical-align: middle;
-    }
-
-    .dataframe tbody tr th {
-        vertical-align: top;
-    }
-
-    .dataframe thead th {
-        text-align: right;
-    }
-</style>
 <table border="1" class="dataframe">
   <thead>
     <tr style="text-align: right;">
@@ -289,10 +246,7 @@ data.head()
 </table>
 </div>
 
-
-
 ### Training and testing data preparation
-
 
 ```python
 # Extract texts and labels
@@ -302,49 +256,42 @@ labels = data['sentiment'].values
 # Train-test split
 x_train, x_test, y_train, y_test = train_test_split(texts, labels, test_size=0.2, random_state=69)
 
-# # Apply POS filtering to the training set only
-# # Split the data into chunks for parallel processing
-# num_chunks = 8
-# chunks = np.array_split(x_train, num_chunks)
+# Apply POS filtering to the training set only
+# Split the data into chunks for parallel processing
+num_chunks = cpu_count
+chunks = np.array_split(x_train, num_chunks)
 
-# # Process the chunks in parallel
-# with ProcessPoolExecutor(max_workers=num_chunks) as executor:
-#     x_train_filtered_chunks = list(executor.map(process_texts, chunks))
+# Process the chunks in parallel
+with ProcessPoolExecutor(max_workers=num_chunks) as executor:
+    x_train_filtered_chunks = list(executor.map(process_texts, chunks))
 
-# # Combine the chunks back into a single list
-# x_train_filtered = [item for sublist in x_train_filtered_chunks for item in sublist]
+# Combine the chunks back into a single list
+x_train_filtered = [item for sublist in x_train_filtered_chunks for item in sublist]
 ```
-
 
 ```python
 # Parameters
 max_features = 1000
 max_len = 100
-embedding_dim = 300
-num_classes = 2
+embedding_dim = 100
 
 # Text tokenizing
 tokenizer = Tokenizer(num_words=max_features)
-# tokenizer.fit_on_texts(x_train_filtered)
-# x_train_sequences = tokenizer.texts_to_sequences(x_train_filtered)
-tokenizer.fit_on_texts(x_train)
-x_train_sequences = tokenizer.texts_to_sequences(x_train)
+tokenizer.fit_on_texts(x_train_filtered)
+x_train_sequences = tokenizer.texts_to_sequences(x_train_filtered)
+# tokenizer.fit_on_texts(x_train)
+# x_train_sequences = tokenizer.texts_to_sequences(x_train)
 x_test_sequences = tokenizer.texts_to_sequences(x_test)
 
 # Pad sequences
 x_train_padded = pad_sequences(x_train_sequences, maxlen=max_len)
 x_test_padded = pad_sequences(x_test_sequences, maxlen=max_len)
-
-# Convert labels to categorical
-y_train_categorical = to_categorical(np.asarray(y_train))
-y_test_categorical = to_categorical(np.asarray(y_test))
 ```
 
 ### Model layers
 
-
 ```python
-glove_path = './glove.6B/glove.6B.300d.txt'
+glove_path = './glove.6B/glove.6B.100d.txt'
 embedding_matrix = load_glove_embeddings(glove_path, tokenizer, embedding_dim)
 
 # Embedding layer with pre-trained weights
@@ -354,23 +301,6 @@ embedding_layer = Embedding(len(tokenizer.word_index) + 1,
                             trainable=False)
 ```
 
-    2024-06-24 07:14:13.286006: I external/local_xla/xla/stream_executor/cuda/cuda_executor.cc:984] could not open file to read NUMA node: /sys/bus/pci/devices/0000:01:00.0/numa_node
-    Your kernel may have been built without NUMA support.
-    2024-06-24 07:14:13.286123: I external/local_xla/xla/stream_executor/cuda/cuda_executor.cc:984] could not open file to read NUMA node: /sys/bus/pci/devices/0000:01:00.0/numa_node
-    Your kernel may have been built without NUMA support.
-    2024-06-24 07:14:13.286182: I external/local_xla/xla/stream_executor/cuda/cuda_executor.cc:984] could not open file to read NUMA node: /sys/bus/pci/devices/0000:01:00.0/numa_node
-    Your kernel may have been built without NUMA support.
-    2024-06-24 07:14:13.442673: I external/local_xla/xla/stream_executor/cuda/cuda_executor.cc:984] could not open file to read NUMA node: /sys/bus/pci/devices/0000:01:00.0/numa_node
-    Your kernel may have been built without NUMA support.
-    2024-06-24 07:14:13.442791: I external/local_xla/xla/stream_executor/cuda/cuda_executor.cc:984] could not open file to read NUMA node: /sys/bus/pci/devices/0000:01:00.0/numa_node
-    Your kernel may have been built without NUMA support.
-    2024-06-24 07:14:13.442802: I tensorflow/core/common_runtime/gpu/gpu_device.cc:2019] Could not identify NUMA node of platform GPU id 0, defaulting to 0.  Your kernel may not have been built with NUMA support.
-    2024-06-24 07:14:13.442848: I external/local_xla/xla/stream_executor/cuda/cuda_executor.cc:984] could not open file to read NUMA node: /sys/bus/pci/devices/0000:01:00.0/numa_node
-    Your kernel may have been built without NUMA support.
-    2024-06-24 07:14:13.442875: I tensorflow/core/common_runtime/gpu/gpu_device.cc:1928] Created device /job:localhost/replica:0/task:0/device:GPU:0 with 4047 MB memory:  -> device: 0, name: NVIDIA GeForce RTX 2060, pci bus id: 0000:01:00.0, compute capability: 7.5
-
-
-
 ```python
 # LSTM branch (with Batch Normalization and Dropout)
 lstm_input = Input(shape=(max_len,))
@@ -378,7 +308,10 @@ embedded_sequences_lstm = embedding_layer(lstm_input)
 lstm_out = LSTM(128, return_sequences=True)(embedded_sequences_lstm)
 lstm_out = BatchNormalization()(lstm_out) # Batch Normalization helps to normalize activations and speed up convergence
 lstm_out = Dropout(0.5)(lstm_out) # Dropout = 0.5 helps to prevent overfitting
-lstm_out = LSTM(64)(lstm_out)
+lstm_out = LSTM(64, return_sequences=True)(lstm_out)
+lstm_out = BatchNormalization()(lstm_out)
+lstm_out = Dropout(0.5)(lstm_out)
+lstm_out = LSTM(32)(lstm_out)
 lstm_out = BatchNormalization()(lstm_out)
 lstm_out = Dropout(0.5)(lstm_out)
 
@@ -391,66 +324,146 @@ cnn_out = Dropout(0.5)(cnn_out)
 cnn_out = Conv1D(64, 5, activation='relu')(cnn_out)
 cnn_out = BatchNormalization()(cnn_out)
 cnn_out = Dropout(0.5)(cnn_out)
+cnn_out = Conv1D(32, 5, activation='relu')(cnn_out)
+cnn_out = BatchNormalization()(cnn_out)
+cnn_out = Dropout(0.5)(cnn_out)
 cnn_out = GlobalMaxPooling1D()(cnn_out)
 
 # Concatenate LSTM and CNN outputs
 merged = concatenate([lstm_out, cnn_out])
-merged = Dense(64, activation='relu')(merged)
+merged = Dense(32, activation='relu')(merged)
 merged = BatchNormalization()(merged)
 merged = Dropout(0.5)(merged)
-pred = Dense(num_classes, activation='softmax')(merged)
+pred = Dense(1, activation='sigmoid')(merged)
 
 # Build model
 model = Model(inputs=[lstm_input, cnn_input], outputs=pred)
 model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+model.summary()
 ```
+
+<pre style="white-space:pre;overflow-x:auto;line-height:normal;font-family:Menlo,'DejaVu Sans Mono',consolas,'Courier New',monospace"><span style="font-weight: bold">Model: "functional_17"</span>
+</pre>
+
+<pre style="white-space:pre;overflow-x:auto;line-height:normal;font-family:Menlo,'DejaVu Sans Mono',consolas,'Courier New',monospace">┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━┓
+┃<span style="font-weight: bold"> Layer (type)        </span>┃<span style="font-weight: bold"> Output Shape      </span>┃<span style="font-weight: bold">    Param # </span>┃<span style="font-weight: bold"> Connected to      </span>┃
+┡━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━┩
+│ input_layer_21      │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">100</span>)       │          <span style="color: #00af00; text-decoration-color: #00af00">0</span> │ -                 │
+│ (<span style="color: #0087ff; text-decoration-color: #0087ff">InputLayer</span>)        │                   │            │                   │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ input_layer_22      │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">100</span>)       │          <span style="color: #00af00; text-decoration-color: #00af00">0</span> │ -                 │
+│ (<span style="color: #0087ff; text-decoration-color: #0087ff">InputLayer</span>)        │                   │            │                   │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ embedding_1         │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">100</span>, <span style="color: #00af00; text-decoration-color: #00af00">100</span>)  │  <span style="color: #00af00; text-decoration-color: #00af00">5,221,400</span> │ input_layer_21[<span style="color: #00af00; text-decoration-color: #00af00">0</span>… │
+│ (<span style="color: #0087ff; text-decoration-color: #0087ff">Embedding</span>)         │                   │            │ input_layer_22[<span style="color: #00af00; text-decoration-color: #00af00">0</span>… │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ conv1d_23 (<span style="color: #0087ff; text-decoration-color: #0087ff">Conv1D</span>)  │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">96</span>, <span style="color: #00af00; text-decoration-color: #00af00">128</span>)   │     <span style="color: #00af00; text-decoration-color: #00af00">64,128</span> │ embedding_1[<span style="color: #00af00; text-decoration-color: #00af00">9</span>][<span style="color: #00af00; text-decoration-color: #00af00">0</span>] │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ lstm_37 (<span style="color: #0087ff; text-decoration-color: #0087ff">LSTM</span>)      │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">100</span>, <span style="color: #00af00; text-decoration-color: #00af00">128</span>)  │    <span style="color: #00af00; text-decoration-color: #00af00">117,248</span> │ embedding_1[<span style="color: #00af00; text-decoration-color: #00af00">8</span>][<span style="color: #00af00; text-decoration-color: #00af00">0</span>] │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ batch_normalizatio… │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">96</span>, <span style="color: #00af00; text-decoration-color: #00af00">128</span>)   │        <span style="color: #00af00; text-decoration-color: #00af00">512</span> │ conv1d_23[<span style="color: #00af00; text-decoration-color: #00af00">0</span>][<span style="color: #00af00; text-decoration-color: #00af00">0</span>]   │
+│ (<span style="color: #0087ff; text-decoration-color: #0087ff">BatchNormalizatio…</span> │                   │            │                   │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ batch_normalizatio… │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">100</span>, <span style="color: #00af00; text-decoration-color: #00af00">128</span>)  │        <span style="color: #00af00; text-decoration-color: #00af00">512</span> │ lstm_37[<span style="color: #00af00; text-decoration-color: #00af00">0</span>][<span style="color: #00af00; text-decoration-color: #00af00">0</span>]     │
+│ (<span style="color: #0087ff; text-decoration-color: #0087ff">BatchNormalizatio…</span> │                   │            │                   │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ dropout_66          │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">96</span>, <span style="color: #00af00; text-decoration-color: #00af00">128</span>)   │          <span style="color: #00af00; text-decoration-color: #00af00">0</span> │ batch_normalizat… │
+│ (<span style="color: #0087ff; text-decoration-color: #0087ff">Dropout</span>)           │                   │            │                   │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ dropout_63          │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">100</span>, <span style="color: #00af00; text-decoration-color: #00af00">128</span>)  │          <span style="color: #00af00; text-decoration-color: #00af00">0</span> │ batch_normalizat… │
+│ (<span style="color: #0087ff; text-decoration-color: #0087ff">Dropout</span>)           │                   │            │                   │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ conv1d_24 (<span style="color: #0087ff; text-decoration-color: #0087ff">Conv1D</span>)  │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">92</span>, <span style="color: #00af00; text-decoration-color: #00af00">64</span>)    │     <span style="color: #00af00; text-decoration-color: #00af00">41,024</span> │ dropout_66[<span style="color: #00af00; text-decoration-color: #00af00">0</span>][<span style="color: #00af00; text-decoration-color: #00af00">0</span>]  │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ lstm_38 (<span style="color: #0087ff; text-decoration-color: #0087ff">LSTM</span>)      │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">100</span>, <span style="color: #00af00; text-decoration-color: #00af00">64</span>)   │     <span style="color: #00af00; text-decoration-color: #00af00">49,408</span> │ dropout_63[<span style="color: #00af00; text-decoration-color: #00af00">0</span>][<span style="color: #00af00; text-decoration-color: #00af00">0</span>]  │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ batch_normalizatio… │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">92</span>, <span style="color: #00af00; text-decoration-color: #00af00">64</span>)    │        <span style="color: #00af00; text-decoration-color: #00af00">256</span> │ conv1d_24[<span style="color: #00af00; text-decoration-color: #00af00">0</span>][<span style="color: #00af00; text-decoration-color: #00af00">0</span>]   │
+│ (<span style="color: #0087ff; text-decoration-color: #0087ff">BatchNormalizatio…</span> │                   │            │                   │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ batch_normalizatio… │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">100</span>, <span style="color: #00af00; text-decoration-color: #00af00">64</span>)   │        <span style="color: #00af00; text-decoration-color: #00af00">256</span> │ lstm_38[<span style="color: #00af00; text-decoration-color: #00af00">0</span>][<span style="color: #00af00; text-decoration-color: #00af00">0</span>]     │
+│ (<span style="color: #0087ff; text-decoration-color: #0087ff">BatchNormalizatio…</span> │                   │            │                   │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ dropout_67          │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">92</span>, <span style="color: #00af00; text-decoration-color: #00af00">64</span>)    │          <span style="color: #00af00; text-decoration-color: #00af00">0</span> │ batch_normalizat… │
+│ (<span style="color: #0087ff; text-decoration-color: #0087ff">Dropout</span>)           │                   │            │                   │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ dropout_64          │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">100</span>, <span style="color: #00af00; text-decoration-color: #00af00">64</span>)   │          <span style="color: #00af00; text-decoration-color: #00af00">0</span> │ batch_normalizat… │
+│ (<span style="color: #0087ff; text-decoration-color: #0087ff">Dropout</span>)           │                   │            │                   │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ conv1d_25 (<span style="color: #0087ff; text-decoration-color: #0087ff">Conv1D</span>)  │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">88</span>, <span style="color: #00af00; text-decoration-color: #00af00">32</span>)    │     <span style="color: #00af00; text-decoration-color: #00af00">10,272</span> │ dropout_67[<span style="color: #00af00; text-decoration-color: #00af00">0</span>][<span style="color: #00af00; text-decoration-color: #00af00">0</span>]  │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ lstm_39 (<span style="color: #0087ff; text-decoration-color: #0087ff">LSTM</span>)      │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">32</span>)        │     <span style="color: #00af00; text-decoration-color: #00af00">12,416</span> │ dropout_64[<span style="color: #00af00; text-decoration-color: #00af00">0</span>][<span style="color: #00af00; text-decoration-color: #00af00">0</span>]  │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ batch_normalizatio… │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">88</span>, <span style="color: #00af00; text-decoration-color: #00af00">32</span>)    │        <span style="color: #00af00; text-decoration-color: #00af00">128</span> │ conv1d_25[<span style="color: #00af00; text-decoration-color: #00af00">0</span>][<span style="color: #00af00; text-decoration-color: #00af00">0</span>]   │
+│ (<span style="color: #0087ff; text-decoration-color: #0087ff">BatchNormalizatio…</span> │                   │            │                   │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ batch_normalizatio… │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">32</span>)        │        <span style="color: #00af00; text-decoration-color: #00af00">128</span> │ lstm_39[<span style="color: #00af00; text-decoration-color: #00af00">0</span>][<span style="color: #00af00; text-decoration-color: #00af00">0</span>]     │
+│ (<span style="color: #0087ff; text-decoration-color: #0087ff">BatchNormalizatio…</span> │                   │            │                   │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ dropout_68          │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">88</span>, <span style="color: #00af00; text-decoration-color: #00af00">32</span>)    │          <span style="color: #00af00; text-decoration-color: #00af00">0</span> │ batch_normalizat… │
+│ (<span style="color: #0087ff; text-decoration-color: #0087ff">Dropout</span>)           │                   │            │                   │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ dropout_65          │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">32</span>)        │          <span style="color: #00af00; text-decoration-color: #00af00">0</span> │ batch_normalizat… │
+│ (<span style="color: #0087ff; text-decoration-color: #0087ff">Dropout</span>)           │                   │            │                   │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ global_max_pooling… │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">32</span>)        │          <span style="color: #00af00; text-decoration-color: #00af00">0</span> │ dropout_68[<span style="color: #00af00; text-decoration-color: #00af00">0</span>][<span style="color: #00af00; text-decoration-color: #00af00">0</span>]  │
+│ (<span style="color: #0087ff; text-decoration-color: #0087ff">GlobalMaxPooling1…</span> │                   │            │                   │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ concatenate_8       │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">64</span>)        │          <span style="color: #00af00; text-decoration-color: #00af00">0</span> │ dropout_65[<span style="color: #00af00; text-decoration-color: #00af00">0</span>][<span style="color: #00af00; text-decoration-color: #00af00">0</span>], │
+│ (<span style="color: #0087ff; text-decoration-color: #0087ff">Concatenate</span>)       │                   │            │ global_max_pooli… │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ dense_16 (<span style="color: #0087ff; text-decoration-color: #0087ff">Dense</span>)    │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">32</span>)        │      <span style="color: #00af00; text-decoration-color: #00af00">2,080</span> │ concatenate_8[<span style="color: #00af00; text-decoration-color: #00af00">0</span>]… │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ batch_normalizatio… │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">32</span>)        │        <span style="color: #00af00; text-decoration-color: #00af00">128</span> │ dense_16[<span style="color: #00af00; text-decoration-color: #00af00">0</span>][<span style="color: #00af00; text-decoration-color: #00af00">0</span>]    │
+│ (<span style="color: #0087ff; text-decoration-color: #0087ff">BatchNormalizatio…</span> │                   │            │                   │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ dropout_69          │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">32</span>)        │          <span style="color: #00af00; text-decoration-color: #00af00">0</span> │ batch_normalizat… │
+│ (<span style="color: #0087ff; text-decoration-color: #0087ff">Dropout</span>)           │                   │            │                   │
+├─────────────────────┼───────────────────┼────────────┼───────────────────┤
+│ dense_17 (<span style="color: #0087ff; text-decoration-color: #0087ff">Dense</span>)    │ (<span style="color: #00d7ff; text-decoration-color: #00d7ff">None</span>, <span style="color: #00af00; text-decoration-color: #00af00">1</span>)         │         <span style="color: #00af00; text-decoration-color: #00af00">33</span> │ dropout_69[<span style="color: #00af00; text-decoration-color: #00af00">0</span>][<span style="color: #00af00; text-decoration-color: #00af00">0</span>]  │
+└─────────────────────┴───────────────────┴────────────┴───────────────────┘
+</pre>
+
+<pre style="white-space:pre;overflow-x:auto;line-height:normal;font-family:Menlo,'DejaVu Sans Mono',consolas,'Courier New',monospace"><span style="font-weight: bold"> Total params: </span><span style="color: #00af00; text-decoration-color: #00af00">5,519,929</span> (21.06 MB)
+</pre>
+
+<pre style="white-space:pre;overflow-x:auto;line-height:normal;font-family:Menlo,'DejaVu Sans Mono',consolas,'Courier New',monospace"><span style="font-weight: bold"> Trainable params: </span><span style="color: #00af00; text-decoration-color: #00af00">297,569</span> (1.14 MB)
+</pre>
+
+<pre style="white-space:pre;overflow-x:auto;line-height:normal;font-family:Menlo,'DejaVu Sans Mono',consolas,'Courier New',monospace"><span style="font-weight: bold"> Non-trainable params: </span><span style="color: #00af00; text-decoration-color: #00af00">5,222,360</span> (19.92 MB)
+</pre>
 
 ### Train and evaluate model
 
+```python
+# Callbacks
+early_stopping = EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True) # stop training when the validation loss stops improving to prevent overfitting
+reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=2, min_lr=0.0001) # reduce the learning rate when the validation loss plateaus, allowing finer convergence
+```
 
 ```python
 # Train model
-history = model.fit([x_train_padded, x_train_padded], y_train_categorical, epochs=10, batch_size=32, validation_split=0.2)
+history = model.fit([x_train_padded, x_train_padded], y_train, epochs=5, batch_size=32, validation_split=0.2)
 ```
 
-    Epoch 1/10
-
-
-    2024-06-24 07:14:19.670736: I external/local_xla/xla/stream_executor/cuda/cuda_dnn.cc:465] Loaded cuDNN version 8907
-
-
-    [1m27515/27515[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1077s[0m 39ms/step - accuracy: 0.7228 - loss: 0.5399 - val_accuracy: 0.7718 - val_loss: 0.4577
-    Epoch 2/10
-    [1m27515/27515[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1020s[0m 37ms/step - accuracy: 0.7739 - loss: 0.4659 - val_accuracy: 0.7862 - val_loss: 0.4474
-    Epoch 3/10
-    [1m27515/27515[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1038s[0m 38ms/step - accuracy: 0.7846 - loss: 0.4498 - val_accuracy: 0.7935 - val_loss: 0.4341
-    Epoch 4/10
-    [1m27515/27515[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m991s[0m 36ms/step - accuracy: 0.7909 - loss: 0.4398 - val_accuracy: 0.7938 - val_loss: 0.4319
-    Epoch 5/10
-    [1m27515/27515[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m990s[0m 36ms/step - accuracy: 0.7948 - loss: 0.4336 - val_accuracy: 0.7969 - val_loss: 0.5102
-    Epoch 6/10
-    [1m27515/27515[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m992s[0m 36ms/step - accuracy: 0.7987 - loss: 0.4288 - val_accuracy: 0.7362 - val_loss: 0.6121
-    Epoch 7/10
-    [1m27515/27515[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m990s[0m 36ms/step - accuracy: 0.8016 - loss: 0.4233 - val_accuracy: 0.7951 - val_loss: 0.4375
-    Epoch 8/10
-    [1m27515/27515[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m992s[0m 36ms/step - accuracy: 0.8035 - loss: 0.4217 - val_accuracy: 0.7966 - val_loss: 0.4776
-    Epoch 9/10
-    [1m27515/27515[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m991s[0m 36ms/step - accuracy: 0.8050 - loss: 0.4183 - val_accuracy: 0.7957 - val_loss: 0.4488
-    Epoch 10/10
-    [1m27515/27515[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m990s[0m 36ms/step - accuracy: 0.8059 - loss: 0.4166 - val_accuracy: 0.7988 - val_loss: 0.4811
-
-
+    Epoch 1/5
+    [1m27515/27515[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1463s[0m 53ms/step - accuracy: 0.6912 - loss: 0.6374 - val_accuracy: 0.7261 - val_loss: 0.5454
+    Epoch 2/5
+    [1m27515/27515[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1449s[0m 53ms/step - accuracy: 0.7261 - loss: 0.5406 - val_accuracy: 0.7444 - val_loss: 0.5263
+    Epoch 3/5
+    [1m27515/27515[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1438s[0m 52ms/step - accuracy: 0.7338 - loss: 0.5299 - val_accuracy: 0.7472 - val_loss: 0.5184
+    Epoch 4/5
+    [1m27515/27515[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1451s[0m 53ms/step - accuracy: 0.7359 - loss: 0.5244 - val_accuracy: 0.7425 - val_loss: 0.5132
+    Epoch 5/5
+    [1m27515/27515[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1452s[0m 53ms/step - accuracy: 0.7384 - loss: 0.5215 - val_accuracy: 0.7342 - val_loss: 0.5172
 
 ```python
 # Evaluate model
-score = model.evaluate([x_test_padded, x_test_padded], y_test_categorical)
+score = model.evaluate([x_test_padded, x_test_padded], y_test)
 print(f"Test accuracy: {score[1]}")
 ```
 
-    [1m8599/8599[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m101s[0m 12ms/step - accuracy: 0.7987 - loss: 0.4815
-    Test accuracy: 0.7991262674331665
-
-
+    [1m8599/8599[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m138s[0m 16ms/step - accuracy: 0.7329 - loss: 0.5285
+    Test accuracy: 0.7337396740913391
 
 ```python
 # Plot training & validation accuracy values
@@ -477,7 +490,7 @@ plt.show()
 
 
     
-![png](rotten-tomatoes-lstm-cnn_files/rotten-tomatoes-lstm-cnn_19_0.png)
+![png](rotten-tomatoes-lstm-cnn_files/rotten-tomatoes-lstm-cnn_21_0.png)
     
 
 
@@ -673,9 +686,6 @@ word_index = tokenizer.word_index
 
 # Pad sequences
 data = pad_sequences(sequences, maxlen=max_len)
-
-# Convert labels to categorical
-labels = to_categorical(np.asarray(labels))
 ```
 
 
@@ -685,26 +695,26 @@ score = model.evaluate([data, data], labels)
 print(f"Test accuracy: {score[1]}")
 ```
 
-    2024-06-24 10:04:18.279755: W external/local_tsl/tsl/framework/cpu_allocator_impl.cc:83] Allocation of 425684400 exceeds 10% of free system memory.
+    [1m33257/33257[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m538s[0m 16ms/step - accuracy: 0.6134 - loss: 0.7961
+    Test accuracy: 0.621994137763977
 
 
-    [1m    3/33257[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m21:14[0m 38ms/step - accuracy: 0.5712 - loss: 1.3394
 
-    2024-06-24 10:04:19.840179: W external/local_tsl/tsl/framework/cpu_allocator_impl.cc:83] Allocation of 425684400 exceeds 10% of free system memory.
+```python
+model.save('./models/rotten_tomatoes_sentiment_model.keras', overwrite=True)
+model.save_weights("./models/rotten_tomatoes_sentiment_model.weights.h5", overwrite=True)
+```
 
+## Results
 
-    [1m33257/33257[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m394s[0m 12ms/step - accuracy: 0.5765 - loss: 1.0569
-    Test accuracy: 0.580438494682312
-
-
-Results from the additional testing dataset:
-
-| # | Model | Additional Testing Accuracy | Additional Testing Loss | Base Testing Accuracy | Base Testing Loss |
+| # | Model | Base Testing Accuracy | Base Testing Loss | Additional Testing Accuracy | Additional Testing Loss |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Initial model (64/128) | 0.5530 | 1.0205 | _ | _ |
-| 2 | Bigger model (128/256) with Batch Normalization and Dropout + Filtered content for training | 0.5806 | 0.7253 | _ | _ |
-| 3 | Node-reduced model (64/128) + Filtered content + GloVe 6B 100d word embedding + 10 epochs | 0.5973 | 0.8537 | 0.7412 | 0.5101 |
-| 4 | Model (64/128) + Non-filtered content + GloVe 6B 300d word embedding + 10 epochs | 0.5765 | 1.3394 | 0.7987 | 0.4815 |
+| 1 | Initial model (128/64) | _ | _ | 0.5530 | 1.0205 |
+| 2 | Bigger model (256/128) with Batch Normalization and Dropout + Filtered content for training + 5 epochs | _ | _ | 0.5806 | 0.7253 |
+| 3 | Node-reduced model (128/64) + Filtered content + GloVe 6B 100d word embedding + 10 epochs | 0.7412 | 0.5101 | 0.5973 | 0.8537 |
+| 4 | Model (128/64) + Non-filtered content + GloVe 6B 300d word embedding + 10 epochs | **0.7987** | 0.4815 | 0.5765 | 1.3394 |
+| 5 | Bigger model (256/128) + Filtered content + GloVe 6B 300d word embedding + 5 epochs | 0.7422 | 0.5109 | *0.6048* | 0.8003 |
+| 6 | Extra-layer smaller model (128/64/32) + Corrected usage of binary_crossentropy loss function and sigmoid activation + GloVe 6B 100d word embedding + 5 epochs | 0.7329  | 0.5285 | **0.6134** | 0.7961 |
 
 ## Conclusion
 
@@ -712,8 +722,9 @@ In the 3rd training iteration, the model has achieved a 59.73% accuracy on the a
 
 However, in the 4th training iteration, the model has achieved a 57.65% accuracy on the additional testing dataset, a 79.87% accuracy on the base testing dataset. The model has been trained with the same number of nodes (64/128) and non-filtered content. The model has also been trained with GloVe 6B 300d word embeddings and 10 epochs. The model has shown a decrease in accuracy compared to the 3rd training iteration while having ***a higher overfitting issue*** (increased 5.75% accuracy on base testing dataset).
 
+Finally, in the 6th training iteration, the model has achieved a 61.34% accuracy on the additional testing dataset, a 73.29% accuracy on the base testing dataset. The model has been trained with an extra layer (64/128/32) and corrected usage of binary_crossentropy loss function and sigmoid activation (previously, the models used binary_crossentropy and softmax). The model has also been trained with GloVe 6B 100d word embeddings and 5 epochs. The model has shown a significant improvement in accuracy compared to the 4th and 5th training iteration.
+
 The model can be further improved by:
-- Increasing the number of nodes in the LSTM and CNN layers.
 - Adding more filters to the initial review content (remove special characters, stopwords, etc.).
 - Using more data for training (k-fold cross validation).
 
